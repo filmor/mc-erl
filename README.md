@@ -28,15 +28,17 @@ The Erlang shell can be left with "q().", which shuts down the server.
 If you want to talk to me, I'm often around at #mcdevs on Freenode.
 
 ## Feature list
-* compatible to Minecraft 1.4.5
+* compatible to Minecraft 1.4.7
 * see other players
 * see block changes by other players
 * protocol encryption
 
 ### Todo
 * proper item handling
-* 1.4.6 compatability
 * configuration system (see erlconf)
 * plugin system
 * see player sneaking
 * have multiple entity movement routing processes in worlds with high load
+
+## Contributors:
+Apiocera, clonejo

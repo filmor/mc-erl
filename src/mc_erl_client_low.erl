@@ -1,4 +1,4 @@
--module(mc_erl_player_core).
+-module(mc_erl_client_low).
 -export([init_player/3, keep_alive_sender/1]).
 
 -include_lib("public_key/include/public_key.hrl").

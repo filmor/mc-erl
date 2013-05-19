@@ -1,4 +1,4 @@
--module(mc_erl_player_logic).
+-module(mc_erl_client).
 % only pure erlang, only pure hardcore
 -export([start_logic/2, packet/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -22,6 +22,8 @@ init([Writer, Name]) ->
 	{ok, #state{writer=Writer, player=#player{name=Name}}}.
 
 terminate(_Reason, State) when is_record(State, state) ->
+        % todo: delete all loaded chunks and entities
+        % and the inventory from the client
 	State#state.writer ! stop,
 	case State#state.logged_in of
 		true ->

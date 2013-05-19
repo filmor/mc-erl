@@ -22,6 +22,6 @@
 -record(block_type, {id, name, maxstack=64, placeable=false}).
 
 -record(chunk_column_data, {full_column, chunks=[], add_data=[], biome}).
--record(chunk_data, {types, metadata, block_light, sky_light}).
+-record(chunk_data, {sides, types, metadata, block_light, sky_light}).
 
 -record(slot, {id, count=1, metadata=0, enchantments=[]}).
