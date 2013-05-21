@@ -21,4 +21,5 @@ os_run() ->
         ensure_started(public_key),
         ensure_started(ssl),
         ensure_started(epgsql),
+        mc_erl_entities:init(),
 	ok = application:start(mc_erl).

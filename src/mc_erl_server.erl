@@ -5,7 +5,7 @@
 
 -include("records.hrl").
 
--record(state, {listen, public_key, private_key}).
+-record(state, {listen, public_key, private_key, name}).
 
 -include_lib("public_key/include/OTP-PUB-KEY.hrl").
 
@@ -15,15 +15,15 @@
          terminate/2, code_change/3]).
 
 start_link(Args) ->
-        gen_server:start_link({local, ?MODULE}, ?MODULE, Args, []).
+        gen_server:start_link(?MODULE, Args, []).
 
 stop() ->
 	gen_server:cast(?MODULE, stop).
 
 
 % gen_server callbacks
-init({Name, Port, DefaultWorld, Description, Motd}) ->
-        lager:info("Port=~p", [Port]),
+init(Name) ->
+        Port = mc_erl_config:get_server_option(Name, port),
 	process_flag(trap_exit, true),
 	lager:info("[~s] starting~n", [?MODULE]),
 
@@ -35,7 +35,8 @@ init({Name, Port, DefaultWorld, Description, Motd}) ->
                                              {active, false}, {packet, raw},
                                              {nodelay, true}]),
 	spawn_link(fun() -> acceptor(Listen) end),
-	{ok, #state{listen=Listen, public_key=PublicKey, private_key=PrivateKey}}.
+        {ok, #state{listen=Listen, public_key=PublicKey, private_key=PrivateKey,
+                    name = Name}}.
 
 acceptor(Listen) ->
 	lager:info("[~s:acceptor] awaiting connection...~n", [?MODULE]),
@@ -53,13 +54,9 @@ handle_call(Message, _From, State) ->
 
 handle_cast({new_connection, Socket}, State) ->
 	%lager:info("[~s] Player connecting...~n", [?MODULE]),
-	Pid = proc_lib:start(mc_erl_player_core, init_player, [Socket, State#state.public_key, State#state.private_key]),
+        Pid = mc_erl_clients_sup:start_client(Socket, State#state.public_key,
+                                              State#state.private_key),
 	gen_tcp:controlling_process(Socket, Pid),
-	{noreply, State};
-
-handle_cast({tick, Time}=Tick, State) when is_integer(Time) ->
-	mc_erl_entity_manager:broadcast(Tick),
-	mc_erl_chunk_manager:tick(Time),
 	{noreply, State};
 
 handle_cast(stop, State) ->
@@ -74,7 +71,8 @@ handle_info(Message, State) ->
 	lager:info("[~s] received info: ~p~n", [?MODULE, Message]),
 	{noreply, State}.
 
-terminate(Reason, _State) ->
+terminate(Reason, State) ->
+        gen_tcp:close(State#state.listen),
 	lager:info("[~s] terminated with Reason=~p~n", [?MODULE, Reason]),
 	ok.
 

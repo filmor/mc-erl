@@ -6,7 +6,7 @@
          terminate/2, code_change/3]).
 
 % api functions
--export([start_link/0, set/2]).
+-export([start_link/0, set/2, get_server_option/2]).
 
 -record(state, {event_manager}).
 
@@ -15,6 +15,11 @@ start_link() ->
 
 set(Key, Value) ->
         gen_server:call(?MODULE, {set, Key, Value}).
+
+get_server_option(Name, Key) ->
+        {ok, Env} = application:get_env(servers),
+        Server = proplists:get_value(Name, Env),
+        proplists:get_value(Key, Server).
 
 % gen server stuff
 init([]) ->

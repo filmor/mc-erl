@@ -10,9 +10,6 @@ You'll need an erlang compiler/vm! When you are on Linux, you can install Erlang
 3. $ ./rebar compile
 
 ## Server
-As we now use Mnesia for storing data permanently, it has to be set up first. Always keep in mind that the table definitions can change on updates, introducing incompabilities. Use the .bat files on Windows.
-
-    $ ./setup.sh
 
 ### Starting:
     $ ./run.sh

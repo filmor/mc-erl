@@ -1,6 +1,6 @@
 -module(mc_erl_client).
 % only pure erlang, only pure hardcore
--export([start_logic/2, packet/2]).
+-export([start_link/3, packet/2]).
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
 -record(state, {writer, player, mode=creative, chunks=none, cursor_item=empty, logged_in=false,
@@ -10,8 +10,8 @@
 
 -include("records.hrl").
 
-start_logic(Writer, Name) ->
-	{ok, Pid} = gen_server:start_link(?MODULE, [Writer, Name], []),
+start_link(Socket, PublicKey, PrivateKey) ->
+	{ok, Pid} = gen_server:start_link(?MODULE, [Socket, PublicKey, PrivateKey], []),
 	Pid.
 
 packet(Logic, Packet) ->

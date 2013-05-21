@@ -3,10 +3,13 @@
 
 -export([init/1]).
 
--export([start_link/0]).
+-export([start_link/0, start_server/1]).
 
 start_link() ->
         supervisor:start_link({local, ?MODULE}, ?MODULE, []).
+
+start_server(Name) ->
+        supervisor:start_child(?MODULE, [Name]).
 
 init(_) ->
         lager:info("starting servers_sup"),

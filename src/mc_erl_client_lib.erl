@@ -1,5 +1,5 @@
--module(mc_erl_client_low).
--export([init_player/3, keep_alive_sender/1]).
+-module(mc_erl_client_lib).
+-export([init_player/3]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -42,7 +42,7 @@ init_player(Socket, PublicKey, PrivateKey) when is_record(PrivateKey, 'RSAPrivat
 					Writer = proc_lib:spawn_link(fun() -> async_writer(Socket, DecrSymKey, DecrSymKey) end),
 					Logic = mc_erl_player_logic:start_logic(Writer, Name),
 					Self = self(),
-					Decoder = spawn_link(fun() -> decoder(Self, Logic) end),
+					Decoder = spawn_link(fun() -> reader(Self, Logic) end),
 					mc_erl_player_logic:packet(Logic, login_sequence),
 					
 					decrypter(Socket, DecrSymKey, DecrSymKey, Decoder);
@@ -55,11 +55,11 @@ init_player(Socket, PublicKey, PrivateKey) when is_record(PrivateKey, 'RSAPrivat
 			gen_tcp:close(Socket)
 	end.
 
-decoder(Reader, Logic) when is_pid(Logic) ->
-	case mc_erl_protocol:decode_packet(Reader) of
+reader(Decrypter, Logic) when is_pid(Logic) ->
+	case mc_erl_protocol:decode_packet(Decrypter) of
 		{ok, Packet} ->
 			mc_erl_player_logic:packet(Logic, {packet, Packet}),
-			decoder(Reader, Logic);
+			reader(Decrypter, Logic);
 		{error, closed} ->
 			io:format("[~s] socket is closed~n", [?MODULE]),
 			mc_erl_player_logic:packet(Logic, net_disconnect)
@@ -79,14 +79,6 @@ decrypter(Socket, Key, IVec, Decoder) ->
 	end.
 
 
-% dummy sender, doesn't check for reply
-keep_alive_sender(Socket) ->
-	send(Socket, {keep_alive,  [0]}),
-	receive
-		{'EXIT', _, _} -> ok
-		after 1000 ->
-			keep_alive_sender(Socket)
-	end.
 
 % asynchronous writer to pass on to logic
 async_writer(Socket, Key, IVec) ->
@@ -95,14 +87,11 @@ async_writer(Socket, Key, IVec) ->
 			gen_tcp:close(Socket),
 			ok;
 		{packet, Data} ->
-			{PacketName, _} = Data,
-			%io:format("[~s:async_writer] sending ~p~n", [?MODULE, PacketName]),
 			Encoded = mc_erl_protocol:encode_packet(Data),
 			{Encr, NewIVec} = mc_erl_protocol:encrypt(Socket, Key, IVec, Encoded),
 			gen_tcp:send(Socket, Encr),
 			async_writer(Socket, Key, NewIVec)
 	end.
 
-% Packet gets encoded, so unencrypted communication only!
-send(Socket, Packet) ->
-	gen_tcp:send(Socket, mc_erl_protocol:encode_packet(Packet)).
+send(Writer, Packet) ->
+        Writer ! {packet, mc_erl_protocol:encode_packet(Packet)}.
