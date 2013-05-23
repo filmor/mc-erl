@@ -1,67 +1,63 @@
 -module(mc_erl_client).
 % only pure erlang, only pure hardcore
--export([start_link/3, packet/2]).
--export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
 
--record(state, {writer, player, mode=creative, chunks=none, cursor_item=empty, logged_in=false,
-                known_entities=dict:new(), last_tick, pos={0.5, 70, 0.5, 0, 0}}).%pos = {X, Y, Z, Yaw, Pitch}
+-export([start_link/4]).
+-export([init/1, handle_call/3, handle_cast/2, handle_info/2,
+         terminate/2, code_change/3]).
+
+-record(state, {writer, player, chunks=none, loaded_entities=dict:new()}).
 
 -record(ke_metadata, {relocations=0}).
 
 -include("records.hrl").
 
-start_link(Socket, PublicKey, PrivateKey) ->
-	{ok, Pid} = gen_server:start_link(?MODULE, [Socket, PublicKey, PrivateKey], []),
+start_link(Socket, PublicKey, PrivateKey, ServerName) ->
+	{ok, Pid} = gen_server:start_link(?MODULE, [Socket, PublicKey,
+                                                    PrivateKey, ServerName], []),
 	Pid.
 
 packet(Logic, Packet) ->
 	gen_server:cast(Logic, Packet).
 
-init([Writer, Name]) ->
+init([Socket, PublicKey, PrivateKey]) ->
 	process_flag(trap_exit, true),
-	{ok, #state{writer=Writer, player=#player{name=Name}}}.
-
-terminate(_Reason, State) when is_record(State, state) ->
-        % todo: delete all loaded chunks and entities
-        % and the inventory from the client
-	State#state.writer ! stop,
-	case State#state.logged_in of
-		true ->
-			mc_erl_chat:broadcast(State#state.player#player.name ++ " has left the server."),
-			mc_erl_entity_manager:delete_player(State#state.player);
-		false -> ok
-	end,
-	ok.
-
-code_change(_OldVsn, State, _Extra) ->
-	{ok, State}.
-
-handle_info(Info, State) ->
-	io:format("[~s] got unknown info: ~p~n", [?MODULE, Info]),
-	{noreply, State}.
+        mc_erl_client_lib:start_reader(Socket),
+        Writer = mc_erl_client_lib:start_writer(Socket),
+        {ok, #state{writer=Writer}}.
 
 handle_call(Req, _From, State) ->
 	io:format("[~s] got unknown packet: ~p~n", [?MODULE, Req]),
 	{noreply, State}.
+
+handle_cast({packet, {server_list_ping, [1]}}, State) ->
+        send(State, {disconnect,[lists:flatten([
+                "§1", 0, "51", 0, "1.4.5", 0,
+                mc_erl_config:get(description, []), 0,
+                integer_to_list(mc_erl_entities:get_player_count()), 0, "101"])]}),
+        gen_tcp:close(Socket),
+        {stop, normal, State};
+
+
+
 	
 handle_cast(Req, State) ->
 	Writer = State#state.writer,
 	MyPlayer = State#state.player,
-	MyEid = MyPlayer#player.eid,
+	MyEid = MyPlayer#entity.eid,
 	RetState = case Req of
 		% protocol reactions begin
 		login_sequence ->
-			IsValid = mc_erl_chat:is_valid_nickname(State#state.player#player.name),
+			IsValid = mc_erl_chat:is_valid_nickname(State#state.player#entity.name),
 			case IsValid of
 				true ->	
 					case mc_erl_entity_manager:register_player(State#state.player) of
 						{error, name_in_use} ->
 							io:format("[~s] Someone with the same name is already logged in, kicked~n", [?MODULE]),
 							write(Writer, {disconnect, ["Someone with the same name is already logged in :("]}),
-							{disconnect, {multiple_login, State#state.player#player.name}, State};
+							{disconnect, {multiple_login, State#state.player#entity.name}, State};
 		
 						NewPlayer ->
-							Mode = case NewPlayer#player.mode of
+							Mode = case NewPlayer#entity.mode of
 								creative -> 1;
 								survival -> 0
 							end,
@@ -91,7 +87,7 @@ handle_cast(Req, State) ->
 
 							%proc_lib:spawn_link(fun() -> process_flag(trap_exit, true), mc_erl_player_core:keep_alive_sender(Writer) end),
 
-							NewState#state{chunks=Chunks, logged_in=true}
+							NewState#state{chunks=Chunks}
 					end;
 				false ->
 					io:format("[~s] Someone with the wrong nickname has tried to log in, kicked~n", [?MODULE]),
@@ -303,14 +299,14 @@ handle_cast(Req, State) ->
 			State;
 		
 		{animate, Eid, AnimationId} ->
-			case dict:is_key(Eid, State#state.known_entities) of
+			case dict:is_key(Eid, State#state.loaded_entities) of
 				true -> write(Writer, {animation, [Eid, AnimationId]});
 				false -> ok
 			end,
 			State;
 		
 		{entity_metadata, Eid, Metadata} ->
-			case dict:is_key(Eid, State#state.known_entities) of
+			case dict:is_key(Eid, State#state.loaded_entities) of
 				true -> write(Writer, {entity_metadata, [Eid, Metadata]});
 				false -> ok
 			end,
@@ -418,6 +414,25 @@ handle_cast(Req, State) ->
 		Res -> {noreply, Res}
 	end.
 
+handle_info(Info, State) ->
+	io:format("[~s] got unknown info: ~p~n", [?MODULE, Info]),
+	{noreply, State}.
+
+code_change(_OldVsn, State, _Extra) ->
+	{ok, State}.
+
+terminate(_Reason, State) when is_record(State, state) ->
+        % todo: delete all loaded chunks and entities
+        % and the inventory from the client
+	State#state.writer ! stop,
+	case State#state.logged_in of
+		true ->
+                        mc_erl_chat:broadcast(State#state.player#player.name ++ " has left the server."),
+			mc_erl_entity_manager:delete_player(State#state.player);
+		false -> ok
+	end,
+	ok.
+
 write(none, _) -> not_sent;
 write(Writer, Packet) -> Writer ! {packet, Packet}.
 
@@ -436,23 +451,23 @@ spawn_new_entity(Entity, State) when is_record(Entity, entity) ->
 			                	empty -> 0;
 			                	N when is_integer(N) -> N
 			                end, [{0, {byte, 0}}, {1, {short, 300}}, {8, {int, 0}}] ]}),
-			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, #ke_metadata{}}, State#state.known_entities),
-			State#state{known_entities=NewKnownEntities};
+			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, #ke_metadata{}}, State#state.loaded_entities),
+			State#state{loaded_entities=NewKnownEntities};
 		dropped_item ->
 			{Item, Count, Meta} = Entity#entity.item_id,
 			write(Writer, {pickup_spawn, [Eid, Item, Count, Meta, X, Y, Z, 0, 0, 0]}),
-			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, #ke_metadata{}}, State#state.known_entities),
-			State#state{known_entities=NewKnownEntities};
+			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, #ke_metadata{}}, State#state.loaded_entities),
+			State#state{loaded_entities=NewKnownEntities};
 		_ ->
 			State
 	end.
 
 delete_entity(Eid, State) ->
-	case dict:is_key(Eid, State#state.known_entities) of
+	case dict:is_key(Eid, State#state.loaded_entities) of
 		true ->	
 			write(State#state.writer, {destroy_entity, [[Eid]]}),
-			NewKnownEntities = dict:erase(Eid, State#state.known_entities),
-			State#state{known_entities=NewKnownEntities};
+			NewKnownEntities = dict:erase(Eid, State#state.loaded_entities),
+			State#state{loaded_entities=NewKnownEntities};
 		false ->
 			State
 	end.
@@ -466,12 +481,12 @@ update_entity(Entity, State) when is_record(Entity, entity) ->
 			State;
 		true -> case in_range({X, Y, Z}, State) of
 			false ->
-				case dict:is_key(Eid, State#state.known_entities) of 
+				case dict:is_key(Eid, State#state.loaded_entities) of 
 					true -> delete_entity(Eid, State);
 					false -> State
 				end;
 			true ->
-				case dict:is_key(Eid, State#state.known_entities) of
+				case dict:is_key(Eid, State#state.loaded_entities) of
 					true -> move_known_entity(Entity, State);
 					false -> spawn_new_entity(Entity, State)
 				end
@@ -482,7 +497,7 @@ move_known_entity(Entity, State) when is_record(Entity, entity) ->
 	Eid = Entity#entity.eid,
 	{X, Y, Z, Yaw, Pitch} = Entity#entity.location,
 	Writer = State#state.writer,
-	{OldX, OldY, OldZ, _OldYaw, _OldPitch, KEMetadata} = dict:fetch(Eid, State#state.known_entities),
+	{OldX, OldY, OldZ, _OldYaw, _OldPitch, KEMetadata} = dict:fetch(Eid, State#state.loaded_entities),
 	RelativeRelocations = KEMetadata#ke_metadata.relocations,
 	DX = X - OldX,
 	DY = Y - OldY,
@@ -493,10 +508,10 @@ move_known_entity(Entity, State) when is_record(Entity, entity) ->
 	
 	ChangePackets = if
 		(DDistance >= 4) or (RelativeRelocations >= 20) ->
-			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, KEMetadata#ke_metadata{relocations=0}}, State#state.known_entities),
+			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, KEMetadata#ke_metadata{relocations=0}}, State#state.loaded_entities),
 			[{entity_teleport, [Eid, X, Y, Z, FracYaw, FracPitch]}];
 		true ->
-			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, KEMetadata#ke_metadata{relocations=RelativeRelocations + 1}}, State#state.known_entities),
+			NewKnownEntities = dict:store(Eid, {X, Y, Z, Yaw, Pitch, KEMetadata#ke_metadata{relocations=RelativeRelocations + 1}}, State#state.loaded_entities),
 			case Entity#entity.type of
 				player -> [{entity_look_move, [Eid, DX, DY, DZ, FracYaw, FracPitch]},
 				           {entity_head_look, [Eid, FracYaw]}];
@@ -504,7 +519,7 @@ move_known_entity(Entity, State) when is_record(Entity, entity) ->
 			end
 	end,
 	lists:map(fun(Packet) -> write(Writer, Packet) end, ChangePackets),
-	State#state{known_entities=NewKnownEntities}.
+	State#state{loaded_entities=NewKnownEntities}.
 
 
 send_player_list(State) ->

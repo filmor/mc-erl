@@ -9,8 +9,8 @@
 broadcast(Player, Message) when is_record(Player, entity) andalso Player#entity.type =:= player ->
 	broadcast(Player#entity.name ++ ": " ++ Message);
 
-broadcast(Player, Message) when is_record(Player, player) ->
-	broadcast(Player#player.name ++ ": " ++ Message).
+broadcast(Player, Message) when is_record(Player, entity) ->
+	broadcast(Player#entity.name ++ ": " ++ Message).
 
 broadcast(Message) ->
 	Players = mc_erl_entity_manager:get_all_players(),
@@ -24,7 +24,7 @@ to_player(Name, Message) when is_list(Name) andalso length(Name) > 0 ->
 	to_player(Receiver, Message);
 	
 to_player(Receiver, Message) when is_record(Receiver, entity) andalso Receiver#entity.type =:= player ->
-	to_player(Receiver#entity.logic, Message);
+	to_player(Receiver#entity.pid, Message);
 	
 to_player(Logic, Message) when is_pid(Logic) ->
 	Parts = split_message(Message),
