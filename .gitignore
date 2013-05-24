@@ -3,9 +3,16 @@
 *.beam
 *.dump
 *.log
+*.log.*
+*.swp
 *.zip
+
+fprof.trace
 key
 key.pub
+
+doc/*
 ebin/*
 deps/*
 Mnesia.*
+log/*
