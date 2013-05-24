@@ -1,4 +1,5 @@
-%% @author clonejo <admin@clonejo.de>
+%% @copyright 2013 Feiko Nanninga
+%%
 %% @doc Supplies regions with blocks of 1024 entity ids. Eids are reused.
 
 -module(mc_erl_eid).

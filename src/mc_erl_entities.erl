@@ -1,3 +1,5 @@
+%% @copyright 2013 Feiko Nanninga
+
 -module(mc_erl_entities).
 
 -export([init/0, add/1, update/1, delete/1, get_entity/1, get_pid/1,

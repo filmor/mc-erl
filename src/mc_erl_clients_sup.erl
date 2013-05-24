@@ -1,3 +1,5 @@
+%% @copyright 2013 Feiko Nanninga
+
 -module(mc_erl_clients_sup).
 -behavior(supervisor).
 
