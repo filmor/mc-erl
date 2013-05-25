@@ -1,7 +1,7 @@
 %% @copyright 2012-2013 Gregory Fefelov, Feiko Nanninga
 
 -module(mc_erl_app).
--export([start/2, stop/1, os_run/0]).
+-export([start/2, stop/1, start/0]).
 
 ensure_started(App) ->
 	case application:start(App) of
@@ -15,7 +15,7 @@ start(_StartType, _StartArgs) ->
 stop(_State) -> mc_erl_server_sup:shutdown().
 
 %% to be called from OS' command line
-os_run() ->
+start() ->
         lager:start(),
 	ensure_started(mnesia),
 	ensure_started(cutkey),
