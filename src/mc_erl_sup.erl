@@ -1,3 +1,5 @@
+%% @copyright 2013 Feiko Nanninga
+
 -module(mc_erl_sup).
 -behavior(supervisor).
 
@@ -13,5 +15,9 @@ init(_) ->
               [{worlds_sup, {mc_erl_worlds_sup, start_link, []},
                        permanent, infinity, supervisor, [mc_erl_worlds_sup]},
                {servers_sup, {mc_erl_servers_sup, start_link, []},
-                       permanent, infinity, supervisor, [mc_erl_servers_sup]}
+                       permanent, infinity, supervisor, [mc_erl_servers_sup]},
+               {clients_sup, {mc_erl_clients_sup, start_link, []},
+                       permanent, infinity, supervisor, [mc_erl_clients_sup]},
+               {eid, {mc_erl_eid, start_link, []},
+                       permanent, infinity, worker, [mc_erl_eid]}
               ]}}.

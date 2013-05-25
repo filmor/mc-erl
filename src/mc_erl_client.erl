@@ -1,3 +1,5 @@
+%% @copyright 2012-2013 Gregory Fefelov, Feiko Nanninga
+
 -module(mc_erl_client).
 % only pure erlang, only pure hardcore
 
@@ -5,7 +7,8 @@
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
          terminate/2, code_change/3]).
 
--record(state, {writer, player, chunks=none, loaded_entities=dict:new()}).
+-record(state, {writer, reader, socket,
+                player, chunks=none, entities=dict:new()}).
 
 -record(ke_metadata, {relocations=0}).
 
@@ -16,32 +19,29 @@ start_link(Socket, PublicKey, PrivateKey, ServerName) ->
                                                     PrivateKey, ServerName], []),
 	Pid.
 
-packet(Logic, Packet) ->
-	gen_server:cast(Logic, Packet).
-
 init([Socket, PublicKey, PrivateKey]) ->
 	process_flag(trap_exit, true),
-        mc_erl_client_lib:start_reader(Socket),
-        Writer = mc_erl_client_lib:start_writer(Socket),
-        {ok, #state{writer=Writer}}.
+        case mc_erl_client_lib:read_async(Socket) of
+                {packet, {server_list_ping, [1]}} ->
+                        P = {disconnect, [lists:flatten(["§1", 0, "51", 0, "1.4.5", 0,
+                                 mc_erl_config:get(description, []), 0,
+                                 integer_to_list(mc_erl_entities:get_player_count()),
+                                 0, "101"])]},
+                        mc_erl_client_lib:write_sync(Socket, P),
+                        gen_tcp:close(Socket),
+                        {stop, normal};
+                {packet, {handshake, [51, Name, _Host, _Port]}} ->
+                        lager:info("Player joining: ~s~n", [Name]),
+                        {ok, Writer, Reader} = mc_erl_client_lib:initialize_encryption(
+                                        Socket, PublicKey, PrivateKey),
+                        {ok, #state{writer=Writer, reader=Reader}}
+                end.
 
 handle_call(Req, _From, State) ->
-	io:format("[~s] got unknown packet: ~p~n", [?MODULE, Req]),
+	lager:info("got unknown packet: ~p~n", [Req]),
 	{noreply, State}.
 
-handle_cast({packet, {server_list_ping, [1]}}, State) ->
-        send(State, {disconnect,[lists:flatten([
-                "§1", 0, "51", 0, "1.4.5", 0,
-                mc_erl_config:get(description, []), 0,
-                integer_to_list(mc_erl_entities:get_player_count()), 0, "101"])]}),
-        gen_tcp:close(Socket),
-        {stop, normal, State};
-
-
-
-	
 handle_cast(Req, State) ->
-	Writer = State#state.writer,
 	MyPlayer = State#state.player,
 	MyEid = MyPlayer#entity.eid,
 	RetState = case Req of
@@ -52,8 +52,8 @@ handle_cast(Req, State) ->
 				true ->	
 					case mc_erl_entity_manager:register_player(State#state.player) of
 						{error, name_in_use} ->
-							io:format("[~s] Someone with the same name is already logged in, kicked~n", [?MODULE]),
-							write(Writer, {disconnect, ["Someone with the same name is already logged in :("]}),
+							lager:info("[~s] Someone with the same name is already logged in, kicked~n", [?MODULE]),
+							send(State, {disconnect, ["Someone with the same name is already logged in :("]}),
 							{disconnect, {multiple_login, State#state.player#entity.name}, State};
 		
 						NewPlayer ->
@@ -61,8 +61,7 @@ handle_cast(Req, State) ->
 								creative -> 1;
 								survival -> 0
 							end,
-							receive after 2000 -> ok end,
-							write(Writer, {login_request, [NewPlayer#player.eid, "DEFAULT", Mode, 0, 0, 0, 100]}),
+							send(Writer, {login_request, [NewPlayer#player.eid, "DEFAULT", Mode, 0, 0, 0, 100]}),
 
 							send_player_abilities(State),
 							send_inventory(State),
@@ -72,13 +71,13 @@ handle_cast(Req, State) ->
 											{replace, #slot{id=3, count=40}}),
 										41, {replace, #slot{id=3, count=64}}),
 							%NewState = State,
-							write(Writer, {spawn_position, [0, 0, 0]}),
+							send(State, {spawn_position, [0, 0, 0]}),
 							{X, Y, Z, Yaw, Pitch} = StartPos = State#state.pos,
 							
 							Chunks = check_chunks(Writer, {X, Y, Z}),
 							
 							send_player_list(State),							
-							write(Writer, {player_position_look, [X,Y+1.62,Y,Z,Yaw,Pitch,1]}),
+							send(State, {player_position_look, [X,Y+1.62,Y,Z,Yaw,Pitch,1]}),
 							
 							mc_erl_entity_manager:move_entity(NewPlayer#player.eid, StartPos),
 							
@@ -90,8 +89,8 @@ handle_cast(Req, State) ->
 							NewState#state{chunks=Chunks}
 					end;
 				false ->
-					io:format("[~s] Someone with the wrong nickname has tried to log in, kicked~n", [?MODULE]),
-					write(Writer, {disconnect, ["Invalid username :("]}),
+					lager:info("[~s] Someone with the wrong nickname has tried to log in, kicked~n", [?MODULE]),
+					send(State, {disconnect, ["Invalid username :("]}),
 					{disconnect, {invalid_username, MyPlayer#player.name}, State}
 			end;
 			
@@ -176,7 +175,7 @@ handle_cast(Req, State) ->
 						ok ->
 							update_slot(State, SelectedSlot, reduce);
 						{error, forbidden_block_id, {_RX, _RY, _RZ}} ->
-							io:format("[~s] ~s tried to set a forbidden block (~p)~n", [?MODULE, MyPlayer#player.name, BlockId])
+							lager:info("[~s] ~s tried to set a forbidden block (~p)~n", [?MODULE, MyPlayer#player.name, BlockId])
 					end
 			end;
 		
@@ -257,7 +256,7 @@ handle_cast(Req, State) ->
 			end;
 
 		{packet, {window_click, [0, SlotNo, _, _TransactionId, true, _Item]}} -> % shift click
-			io:format("SlotNo=~p~n", [SlotNo]),
+			lager:info("SlotNo=~p~n", [SlotNo]),
 			SelectedSlot = get_slot(MyPlayer#player.inventory, SlotNo),
 			if
 				SlotNo >= 9, SlotNo =< 35 ->
@@ -279,7 +278,7 @@ handle_cast(Req, State) ->
 			end;
 		
 		{packet, {window_click, [_, _, _, TransactionId, _, _]}} ->
-			write(Writer, {transaction, [0, TransactionId, false]}),
+			send(State, {transaction, [0, TransactionId, false]}),
 			State;
 
 		{packet, {close_window, [0]}} ->
@@ -289,25 +288,25 @@ handle_cast(Req, State) ->
 			State; %% probably check for proper flying/walking change
 		
 		{packet, UnknownPacket} ->
-			io:format("[~s] unhandled packet: ~p~n", [?MODULE, UnknownPacket]),
+			lager:info("[~s] unhandled packet: ~p~n", [?MODULE, UnknownPacket]),
 			State;
 		% protocol reactions end
 		
 		% chat
 		{chat, Message} ->
-			write(Writer, {chat_message, [Message]}),
+			send(State, {chat_message, [Message]}),
 			State;
 		
 		{animate, Eid, AnimationId} ->
 			case dict:is_key(Eid, State#state.loaded_entities) of
-				true -> write(Writer, {animation, [Eid, AnimationId]});
+				true -> write(State, {animation, [Eid, AnimationId]});
 				false -> ok
 			end,
 			State;
 		
 		{entity_metadata, Eid, Metadata} ->
 			case dict:is_key(Eid, State#state.loaded_entities) of
-				true -> write(Writer, {entity_metadata, [Eid, Metadata]});
+				true -> send(State, {entity_metadata, [Eid, Metadata]});
 				false -> ok
 			end,
 			State;
@@ -315,7 +314,7 @@ handle_cast(Req, State) ->
 		{tick, Tick} ->
 			if
 				(Tick rem 20) == 0 ->
-					write(Writer, {time_update, [Tick, Tick]});
+					send(State, {time_update, [Tick, Tick]});
 				true -> ok
 			end,
 			FinalState = State#state{last_tick=Tick},
@@ -324,7 +323,7 @@ handle_cast(Req, State) ->
 		{block_delta, {X, Y, Z, BlockId, Metadata}} ->
 			case in_range({X, Y, Z}, State) of
 				true ->
-					write(Writer, {block_change, [X, Y, Z, BlockId, Metadata]});
+					send(State, {block_change, [X, Y, Z, BlockId, Metadata]});
 				false -> ok
 			end,
 			State;
@@ -336,13 +335,13 @@ handle_cast(Req, State) ->
 				false -> ok;
 				true ->
 					ChunkData = mc_erl_chunk_manager:get_chunk(Coord),
-					write(Writer, {map_chunk, [X, Z, {parsed, ChunkData}]})
+					send(State, {map_chunk, [X, Z, {parsed, ChunkData}]})
 			end,
 			State;
 		
 		% adds or removes a player on the player list
 		{player_list, Player, Mode} ->
-			write(Writer, {player_list_item, [Player#player.name,
+			send(State, {player_list_item, [Player#player.name,
 			                                  case Mode of
 					                              new -> true;
 					                              delete -> false
@@ -363,7 +362,7 @@ handle_cast(Req, State) ->
             AVx = trunc(VX*32000),
             AVy = trunc(VY*32000),
             AVz = trunc(VZ*32000),
-            write(Writer, {entity_velocity, [Eid, AVx, AVy, AVz]}),
+            send(State, {entity_velocity, [Eid, AVx, AVy, AVz]}),
             State;
 		
         
@@ -382,30 +381,30 @@ handle_cast(Req, State) ->
 			Fun(State);
 		
 		UnknownMessage ->
-			io:format("[~s] unknown message: ~p~n", [?MODULE, UnknownMessage]),
+			lager:info("[~s] unknown message: ~p~n", [?MODULE, UnknownMessage]),
 			State
 	end,
 	case RetState of
 		% graceful stops
 		{disconnect, net_disconnect, DisconnectState} ->
-			io:format("[~s] Connection lost with ~s~n", [?MODULE, DisconnectState#state.player#player.name]),
+			lager:info("[~s] Connection lost with ~s~n", [?MODULE, DisconnectState#state.player#entity.name]),
 			{stop, normal, DisconnectState};
 
 		{disconnect, {graceful, _QuitMessage}, DisconnectState} ->
-			io:format("[~s] Player ~s has quit~n", [?MODULE, DisconnectState#state.player#player.name]),
+			lager:info("[~s] Player ~s has quit~n", [?MODULE, DisconnectState#state.player#entity.name]),
 			{stop, normal, DisconnectState};
 		
 		% not graceful stops
 		{disconnect, {invalid_username, AttemptedName}, DisconnectState} ->
-			io:format("[~s] Invalid username trying to log in: ~s~n", [?MODULE, AttemptedName]),
+			lager:info("[~s] Invalid username trying to log in: ~s~n", [?MODULE, AttemptedName]),
 			{stop, normal, DisconnectState};
 
 		{disconnect, {multiple_login, AttemptedName}, DisconnectState} ->
-			io:format("[~s] Multiple login: ~s~n", [?MODULE, AttemptedName]),
+			lager:info("[~s] Multiple login: ~s~n", [?MODULE, AttemptedName]),
 			{stop, normal, DisconnectState};
 		
 		{disconnect, {cheating, Reason}, DisconnectState} ->
-			io:format("[~s] player is kicked due cheating: ~p~n", [?MODULE, Reason]),
+			lager:info("[~s] player is kicked due cheating: ~p~n", [?MODULE, Reason]),
 			{stop, normal, DisconnectState};
 
 		{disconnect, Reason, DisconnectState} -> {stop, Reason, DisconnectState};
@@ -415,26 +414,20 @@ handle_cast(Req, State) ->
 	end.
 
 handle_info(Info, State) ->
-	io:format("[~s] got unknown info: ~p~n", [?MODULE, Info]),
+	lager:info("[~s] got unknown info: ~p~n", [?MODULE, Info]),
 	{noreply, State}.
 
 code_change(_OldVsn, State, _Extra) ->
 	{ok, State}.
 
 terminate(_Reason, State) when is_record(State, state) ->
-        % todo: delete all loaded chunks and entities
-        % and the inventory from the client
-	State#state.writer ! stop,
-	case State#state.logged_in of
-		true ->
-                        mc_erl_chat:broadcast(State#state.player#player.name ++ " has left the server."),
-			mc_erl_entity_manager:delete_player(State#state.player);
-		false -> ok
-	end,
+        mc_erl_client_lib:stop(State#state.writer),
+        mc_erl_client_lib:stop(State#state.reader),
+        % TODO: remove entity from region and entity table 
 	ok.
 
-write(none, _) -> not_sent;
-write(Writer, Packet) -> Writer ! {packet, Packet}.
+send(State, Packet) ->
+        (State#state.writer) ! {send, Packet}.
 
 % === entities ===
 spawn_new_entity(Entity, State) when is_record(Entity, entity) ->

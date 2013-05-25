@@ -17,4 +17,4 @@ init(_) ->
         lager:info("starting clients_sup"),
         {ok, {{simple_one_for_one, 5, 5000},
               [{client, {mc_erl_client, start_link, []},
-                permanent, 5000, worker, [mc_erl_client]}]}}.
+                temporary, 5000, worker, [mc_erl_client]}]}}.

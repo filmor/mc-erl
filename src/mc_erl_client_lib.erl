@@ -1,68 +1,39 @@
+%% @copyright 2012-2013 Gregory Fefelov, Feiko Nanninga
+
 -module(mc_erl_client_lib).
--export([init_player/3]).
+-export([start_reader/1, start_decrypting_reader/2, read_async/1,
+         start_writer/2, write_async/2,
+         initialize_encryption/3]).
 
 -include_lib("public_key/include/public_key.hrl").
 
-init_player(Socket, PublicKey, PrivateKey) when is_record(PrivateKey, 'RSAPrivateKey') ->
-	proc_lib:init_ack(self()),
+start_reader(Source) ->
+        Self = self(),
+        spawn_link(fun() -> reader(Source, Self) end).
 
-	{ok, Packet} = mc_erl_protocol:decode_packet(Socket),
-	case Packet of
-		{server_list_ping, [1] } ->
-			send(Socket, {disconnect,[lists:flatten([
-				167, "1", 0,
-				"51", 0,
-				"1.4.6", 0,
-				mc_erl_config:get(description, []), 0,
-				integer_to_list(mc_erl_entity_manager:player_count()), 0,
-				"101"])]}),
-			gen_tcp:close(Socket);
+start_decrypting_reader(Socket, Key) ->
+        Client = self(),
+        Decrypter = spawn_link(fun() -> Reader = receive {reader, R} -> R end,
+                                        decrypter(Socket, Key, Key, Reader) end),
+        spawn_link(fun() -> reader(Decrypter, Client) end).
 
-		{handshake, [51, Name, _Host, _Port]} ->
-			io:format("[~s] Player joining: ~s~n", [?MODULE, Name]),
-			
-			% generate token
-			Token = crypto:strong_rand_bytes(4),
-
-			% send encryption_key_request
-			send(Socket, {encryption_key_request, ["-", PublicKey, Token]}),
-
-			% wait for encryption_key_response
-			{ok, {encryption_key_response, [EncrSymKey, EncrToken]}} = mc_erl_protocol:decode_packet(Socket),
-
-			% check EncrToken
-			DecrToken = public_key:decrypt_private(EncrToken, PrivateKey),
-			case Token =:= DecrToken of
-				true ->
-					DecrSymKey = public_key:decrypt_private(EncrSymKey, PrivateKey),
-					send(Socket, {encryption_key_response, [<<>>,<<>>]}),
-					
-					% encryption is in effect!
-					
-					Writer = proc_lib:spawn_link(fun() -> async_writer(Socket, DecrSymKey, DecrSymKey) end),
-					Logic = mc_erl_player_logic:start_logic(Writer, Name),
-					Self = self(),
-					Decoder = spawn_link(fun() -> reader(Self, Logic) end),
-					mc_erl_player_logic:packet(Logic, login_sequence),
-					
-					decrypter(Socket, DecrSymKey, DecrSymKey, Decoder);
-				false ->
-					send(Socket, {disconnect, ["You suck."]}),
-					gen_tcp:close(Socket)
-			end;
-		{handshake, [_, _, _, _]} ->
-			send(Socket, {disconnect, ["You're too oldschool! (Wrong client version.)"]}),
-			gen_tcp:close(Socket)
+%% @doc Performs an async read from the source (either Socket or Decrypter).
+read_async(Source) ->
+	case mc_erl_protocol:decode_packet(Source) of
+		{ok, Packet} ->
+			Packet;
+                {error, closed} ->
+			lager:warning("[~s] socket is closed~n", [?MODULE]),
+			net_disconnect
 	end.
 
-reader(Decrypter, Logic) when is_pid(Logic) ->
-	case mc_erl_protocol:decode_packet(Decrypter) of
-		{ok, Packet} ->
-			mc_erl_player_logic:packet(Logic, {packet, Packet}),
-			reader(Decrypter, Logic);
-		{error, closed} ->
-			io:format("[~s] socket is closed~n", [?MODULE]),
-			mc_erl_player_logic:packet(Logic, net_disconnect)
+reader(Source, Client) when is_pid(Client) ->
+        case read_async(Source) of
+                net_disconnect ->
+			mc_erl_player_logic:packet(Client, net_disconnect);
+                Packet ->
+			mc_erl_player_logic:packet(Client, {packet, Packet}),
+			reader(Source, Client)
 	end.
 
 decrypter(Socket, Key, IVec, Decoder) ->
@@ -78,20 +49,62 @@ decrypter(Socket, Key, IVec, Decoder) ->
 			end
 	end.
 
+%% @doc Starts an encrypting writer process. For unencrypted sends use write_async/2.
+start_writer(Socket, Key) ->
+        spawn_link(fun() -> writer(Socket, Key, Key) end).
 
+%% @doc Send packet through Writer process
+write_sync(Writer, Packet) ->
+        Writer ! {packet, Packet},
+        ok.
+
+%% @doc Send packet without Writer process
+write_async(Socket, Packet) ->
+        Encoded = mc_erl_protocol:encode_packet(Packet),
+        ok = gen_tcp:send(Socket, Encoded).
 
 % asynchronous writer to pass on to logic
-async_writer(Socket, Key, IVec) ->
+writer(Socket, Key, IVec) ->
 	receive
 		stop -> 
 			gen_tcp:close(Socket),
 			ok;
 		{packet, Data} ->
 			Encoded = mc_erl_protocol:encode_packet(Data),
-			{Encr, NewIVec} = mc_erl_protocol:encrypt(Socket, Key, IVec, Encoded),
-			gen_tcp:send(Socket, Encr),
-			async_writer(Socket, Key, NewIVec)
+			{Encr, NewIVec} = mc_erl_protocol:encrypt(Socket, Key,
+                                                                  IVec, Encoded),
+			ok = gen_tcp:send(Socket, Encr),
+			writer(Socket, Key, NewIVec)
 	end.
 
-send(Writer, Packet) ->
-        Writer ! {packet, mc_erl_protocol:encode_packet(Packet)}.
+initialize_encryption(Socket, PublicKey, PrivateKey) ->
+        % generate token
+        Token = crypto:strong_rand_bytes(4),
+
+        % send encryption_key_request
+        P = {encryption_key_request, ["-", PublicKey, Token]},
+        mc_erl_client_lib:write_sync(Socket, P),
+
+        % wait for encryption_key_response
+        {ok, {encryption_key_response, [EncrSymKey, EncrToken]}}
+        = mc_erl_client_lib:read_sync(Socket),
+
+        % check EncrToken
+        DecrToken = public_key:decrypt_private(EncrToken, PrivateKey),
+        case Token =:= DecrToken of
+                true ->
+                        DecrSymKey = public_key:decrypt_private(EncrSymKey, PrivateKey),
+                        P2 = {encryption_key_response, [<<>>,<<>>]},
+                        mc_erl_client_lib:write_sync(Socket, P2),
+
+                        % encryption is in effect!
+
+                        {ok,
+                         start_writer(Socket, DecrSymKey),
+                         start_decrypting_reader(Socket, DecrSymKey)};
+                false ->
+                        mc_erl_client_lib:write_sync(Socket, {disconnect,
+                                                              ["You suck."]}),
+                        gen_tcp:close(Socket),
+                        error
+        end.
