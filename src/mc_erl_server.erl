@@ -57,7 +57,7 @@ handle_call(Message, _From, State) ->
 handle_cast({new_connection, Socket}, State) ->
 	%lager:info("[~s] Player connecting...~n", [?MODULE]),
         Pid = mc_erl_clients_sup:start_client(Socket, State#state.public_key,
-                                              State#state.private_key),
+                                              State#state.private_key, State#state.name),
 	gen_tcp:controlling_process(Socket, Pid),
 	{noreply, State};
 

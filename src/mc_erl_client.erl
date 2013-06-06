@@ -19,7 +19,7 @@ start_link(Socket, PublicKey, PrivateKey, ServerName) ->
                                                     PrivateKey, ServerName], []),
 	Pid.
 
-init([Socket, PublicKey, PrivateKey]) ->
+init(Socket, PublicKey, PrivateKey, ServerName) ->
 	process_flag(trap_exit, true),
         case mc_erl_client_lib:read_async(Socket) of
                 {packet, {server_list_ping, [1]}} ->
@@ -32,31 +32,24 @@ init([Socket, PublicKey, PrivateKey]) ->
                         {stop, normal};
                 {packet, {handshake, [51, Name, _Host, _Port]}} ->
                         lager:info("Player joining: ~s~n", [Name]),
-                        {ok, Writer, Reader} = mc_erl_client_lib:initialize_encryption(
+                        {ok, Writer, Decrypter} = mc_erl_client_lib:initialize_encryption(
                                         Socket, PublicKey, PrivateKey),
-                        {ok, #state{writer=Writer, reader=Reader}}
-                end.
-
-handle_call(Req, _From, State) ->
-	lager:info("got unknown packet: ~p~n", [Req]),
-	{noreply, State}.
-
-handle_cast(Req, State) ->
-	MyPlayer = State#state.player,
-	MyEid = MyPlayer#entity.eid,
-	RetState = case Req of
-		% protocol reactions begin
-		login_sequence ->
-			IsValid = mc_erl_chat:is_valid_nickname(State#state.player#entity.name),
+			IsValid = mc_erl_chat:is_valid_nickname(Name),
 			case IsValid of
 				true ->	
-					case mc_erl_entity_manager:register_player(State#state.player) of
-						{error, name_in_use} ->
+					case mc_erl_entities:get_entity_by_name(Name) of
+						E when is_record(E, entity) ->
 							lager:info("[~s] Someone with the same name is already logged in, kicked~n", [?MODULE]),
 							send(State, {disconnect, ["Someone with the same name is already logged in :("]}),
 							{disconnect, {multiple_login, State#state.player#entity.name}, State};
 		
-						NewPlayer ->
+						undefined ->
+                                                        Eid = mc_erl_eid:alloc(),
+                                                        Player = #entity{eid = Eid,
+                                                                         name = Name,
+                                                                         type = player,
+                                                                         pid = self(),
+                                                                         location = {block,  mc_erl_config:get_server_option(ServerName, default_world), 0, 0, 0}},
 							Mode = case NewPlayer#entity.mode of
 								creative -> 1;
 								survival -> 0
@@ -93,6 +86,17 @@ handle_cast(Req, State) ->
 					send(State, {disconnect, ["Invalid username :("]}),
 					{disconnect, {invalid_username, MyPlayer#player.name}, State}
 			end;
+                end.
+
+handle_call(Req, _From, State) ->
+	lager:info("got unknown packet: ~p~n", [Req]),
+	{noreply, State}.
+
+handle_cast(Req, State) ->
+	MyPlayer = State#state.player,
+	MyEid = MyPlayer#entity.eid,
+	RetState = case Req of
+		% protocol reactions begin
 			
 		{packet, {keep_alive, [_]}} ->
 			State;

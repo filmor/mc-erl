@@ -2,8 +2,8 @@
 
 -module(mc_erl_client_lib).
 -export([start_reader/1, start_decrypting_reader/2, read_async/1,
-         start_writer/2, write_async/2,
-         initialize_encryption/3]).
+         start_writer/2, write_async/2, write_sync/2,
+         initialize_encryption/3, decrypter_set_controlling_process/1]).
 
 -include_lib("public_key/include/public_key.hrl").
 
@@ -36,6 +36,13 @@ reader(Source, Client) when is_pid(Client) ->
 			reader(Source, Client)
 	end.
 
+start_decrypter(Socket, Key) ->
+        Self = self(),
+        spawn_link(fun() -> decrypter(Socket, Key, Key, Self) end).
+
+decrypter_set_controlling_process(Decrypter) ->
+        Decrypter ! {set_controlling_process, self()}.
+
 decrypter(Socket, Key, IVec, Decoder) ->
 	receive
 		{get_bytes, N} ->
@@ -46,7 +53,9 @@ decrypter(Socket, Key, IVec, Decoder) ->
 			catch
 				connection_closed ->
 					Decoder ! {error, closed}
-			end
+			end;
+                {set_controlling_process, Pid} ->
+                        decrypter(Socket, Key, IVec, Pid)
 	end.
 
 %% @doc Starts an encrypting writer process. For unencrypted sends use write_async/2.
@@ -87,7 +96,7 @@ initialize_encryption(Socket, PublicKey, PrivateKey) ->
 
         % wait for encryption_key_response
         {ok, {encryption_key_response, [EncrSymKey, EncrToken]}}
-        = mc_erl_client_lib:read_sync(Socket),
+                = mc_erl_client_lib:read_sync(Socket),
 
         % check EncrToken
         DecrToken = public_key:decrypt_private(EncrToken, PrivateKey),
@@ -101,7 +110,7 @@ initialize_encryption(Socket, PublicKey, PrivateKey) ->
 
                         {ok,
                          start_writer(Socket, DecrSymKey),
-                         start_decrypting_reader(Socket, DecrSymKey)};
+                         start_decrypter(Socket, DecrSymKey)};
                 false ->
                         mc_erl_client_lib:write_sync(Socket, {disconnect,
                                                               ["You suck."]}),

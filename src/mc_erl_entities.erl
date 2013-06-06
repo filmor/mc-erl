@@ -2,8 +2,8 @@
 
 -module(mc_erl_entities).
 
--export([init/0, add/1, update/1, delete/1, get_entity/1, get_pid/1,
-         get_cached_location/1, get_current_location/1,
+-export([init/0, add/1, update/1, delete/1, get_entity/1, get_entity_by_name/1,
+         get_pid/1, get_cached_location/1, get_current_location/1,
          get_player_count/0]).
 
 -include("records.hrl").
@@ -39,6 +39,13 @@ get_entity(Eid) when is_integer(Eid) ->
         F = fun() -> mnesia:read(entity, Eid) end,
         {atomic, [Entity]} = mnesia:transaction(F),
         Entity.
+
+get_entity_by_name(Name) ->
+        F = fun() -> mnesia:index_read(entity, Name, #entity.name) end,
+        case mnesia:transaction(F) of
+                {atomic, [Entity]} -> Entity;
+                {atomic, []} -> undefined
+        end.
 
 get_pid(E) ->
         (get_entity(E))#entity.pid.
